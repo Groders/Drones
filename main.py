@@ -3,14 +3,47 @@ from scipy.stats import norm
 from matplotlib import pyplot as plt
 
 class UAVCluster:
-    def __init__(self, numUAVs):
+    def __init__(self, numUAVs, d=100):
         self.uavs = generate_uavs(numUAVs)
         self.T = 0
+        self.d = d
 
     def update(self):
-        # TODO
+        '''
+        Update all uav states, call this after each iteration
+        '''
+        #TODO figure out how to update local state, maybe do it after we calc dv dr 
+        for uav in self.uavs:
+            uav.update(self.uavs, self.d)
+    #self, a, v0, dW, debug=False, c0 = 0.1
+    c0 = 0.1
+
+    def sim (self, T= 2):
+        dW, W = brownian(T=1, N=1000)
+        wind_vel = np.array([100,100])[np.newaxis, :].T
+        for t in range(T):
+            for i, uav in enumerate (self.uavs):
+                a = np.array([np.random.uniform(0, 1),np.random.uniform(0, 1)]).reshape((2,1))
+                a = uav.delta_v(a,wind_vel,dW[t])
+                uav.apply_dv(a)
+            
+            self.update()
 
 class UAV:
+
+    #constants
+    C_1 = 100
+    C_2 = 1.5
+    C_3 = 1.5
+    C_4 = 0.5
+
+    B = 1
+    E = 0.001
+
+
+    #acceleration
+    a = []
+
     def __init__(self, r, v, T=0):
         '''
         R -> position vector of R^2
@@ -22,11 +55,15 @@ class UAV:
         self.T = T
         # self.start = 
 
+    def update(self,swarm,d):
+        self.global_states.append(self.get_nearby_uavs_states(swarm,d,-1))
+        self.T+= 1
+
     def get_global_state(self, T=-1):
-        return self.global_state[T]
+        return self.global_states[T]
         
     def get_local_state(self, T=-1):
-        return self.global_state[T]
+        return self.local_states[T]
 
     def get_local_position(self, T=-1):
         return self.local_states[T][0:2, :]
@@ -34,14 +71,20 @@ class UAV:
     def get_local_velocity(self, T=-1):
         return self.local_states[T][2:4, :]
 
-    def get_nearby_uavs(self, uavs, d, T):
+    def apply_dv(self, a, T=-1):
+        new_state = np.zeros((4,1))
+        new_state[2:4] = self.local_states[T][2:4] + a
+        new_state[0:2] = self.local_states[T][0:2] + new_state[2:4]
+        self.local_states.append(new_state)
+
+    def get_nearby_uavs_states(self, uavs, d, T):
         nearby_uavs = []
         for uav in uavs:
             if np.linalg.norm(uav.get_local_position(T) - self.get_local_position(T)) < d and (uav is not self):
-                nearby_uavs.append(uav)
+                nearby_uavs.append(uav.get_local_state())
         return nearby_uavs
 
-    def delta_v(self, a, c0, v0, dW, T, debug=False):
+    def delta_v(self, a, v0, dW, debug=False, c0 = 0.1):
         '''
         We assume that dt = 1 unit of time
         Temporal state dynamics for velocity.
@@ -51,11 +94,12 @@ class UAV:
         W -> standard wiener process i.i.d across UAVs
         '''
         # covariance of wind velocity
+        self.a.append(a)
         V0 = np.eye(2) * v0
         delta_W = dW.reshape((2,1))
         if debug:
-            print("a:{}\nc0:{}\nvel:{}\nv0:{}\nV0:{}\ndW:{}".format(a, c0, self.get_local_velocity(T), v0, V0, delta_W))
-        dv = a - c0 * (self.get_local_velocity(T) - v0) + V0.dot(delta_W)
+            print("a:{}\nc0:{}\nvel:{}\nv0:{}\nV0:{}\ndW:{}".format(a, c0, self.get_local_velocity(), v0, V0, delta_W))
+        dv = a - c0 * (self.get_local_velocity() - v0) + V0.dot(delta_W)
         return dv
 
     def delta_r(self, T):
@@ -65,19 +109,50 @@ class UAV:
         '''
         return self.get_local_velocity(T)
 
-    def average_cost(self, uavs, d):
-        nearby_states = []
-        x = [uav.s for uav in self.get_nearby_uavs(uavs, d)]
-        print(x)
-        print(x.shape)
-        global_state = [self.s].concatenate(np.array([uav.s for uav in self.get_nearby_uavs(uavs, d)]))
+    def average_cost(self, T):
+        total_cost = 0
 
+        for t in range(T):
+            total_cost += self.C_4*self.collision_cost(T) + self.kinetic_cost(T)
+        
+        return total_cost
+
+    def collision_cost(self, t):
+        global_state = self.global_states[t]
+
+        if len(global_state) > 0:
+            prefix = 1/len(global_state)
+        else:
+            return 0
+
+        local_state = self.local_states[t]
+
+        v = local_state[2:4]
+        r = local_state[0:2]
+
+        s = 0
+        for state in global_state:
+            v_i = state[2:4]
+            r_i = state[0:2]
+
+            s += (np.linalg.norm(v - v_i)**2) / ((self.E + (np.linalg.norm(r - r_i)**2))**self.B)
+        return s
+
+
+    def kinetic_cost(self, t):
+        #position velocity
+        state = self.local_states[t]
+
+        v = state[2:4]
+        r = state[0:2]
+        print(np.linalg.norm(r))
+        return (np.dot(v.T, r)/np.linalg.norm(r)) + self.C_1*(np.linalg.norm(r)**2) + self.C_2*(np.linalg.norm(v)**2) + self.C_3*(np.linalg.norm(self.a[t])**2)
 
     def __str__(self):
-        return "{} {}".format(self.get_position(), self.get_velocity())
+        return "{} {}".format(self.get_local_position(), self.get_local_velocity())
 
     def __repr__(self):
-        return "p:{} v:{}".format(self.get_position().T, self.get_velocity().T)#{'pos': self.get_position(), 'vel': self.get_velocity()}
+        return "p:{} v:{}".format(self.get_local_position().T, self.get_local_velocity().T)#{'pos': self.get_position(), 'vel': self.get_velocity()}
         
 
 
@@ -107,8 +182,8 @@ def wind_velocity():
 def generate_uavs(n):
     uavs = []
     for i in range(n):
-        r = [np.random.randint(0, 10), np.random.randint(0, 10)]
-        v = [np.random.randint(0, 10), np.random.randint(0, 10)]
+        r = [np.random.uniform(0, 10), np.random.uniform(0, 10)]
+        v = [np.random.uniform(0, 10), np.random.uniform(0, 10)]
         uavs.append(UAV(r,v))
     return uavs
 
@@ -130,6 +205,14 @@ def brownian(T=1, N=100):
     return dW, W
 
 def main():
+
+
+    swarm = UAVCluster(2, d=5)
+    swarm.sim()
+
+    print(swarm.uavs[0].average_cost(1))
+
+    '''
     uavs = generate_uavs(5)
     print(uavs)
 
@@ -137,15 +220,14 @@ def main():
     wind_vel = np.array([100,100])[np.newaxis, :].T
     a = np.array([0.2,0.2]).reshape((2,1))
     c0 = 0.1
-    change = uavs[0].delta_v(a, c0, wind_vel, dW[0], True)
+    change = uavs[0].delta_v(a, wind_vel, dW[0], True)
     print(change)
 
-    
-    nearby = uavs[0].get_nearby_uavs(uavs, 100)
+    nearby = uavs[0].get_nearby_uavs_states(uavs, 100)
     print(len(nearby))
 
     uavs[0].average_cost(uavs, 100)
-
+    '''
 
 if __name__ == "__main__":
     main()
