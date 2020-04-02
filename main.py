@@ -39,10 +39,12 @@ class UAVCluster:
                 uav.apply_dv(delta_v)
             
             self.update()
-        for t in range(1):
+        hjb_cost = [0] * len(self.uavs)
+        for t in range(T):
             for i, uav in enumerate (self.uavs):
-                uav.hjb_control(self.uavs, self.d, t)
-                break
+                hjb_cost[i] = uav.hjb_control(t)
+        print("hjb cost:")
+        print(hjb_cost)
 class UAV:
     #constants
     C_0 = 0.1
@@ -304,19 +306,19 @@ class UAV:
         px, py, vx, vy, ax, ay = r[0,0], r[1,0], v[0,0], v[1,0], self.a[t][0], self.a[t][1]
         return self.kinetic_cost_lambda(px,py, vx,  vy, ax, ay)#(np.dot(v.T, r)/np.linalg.norm(r)) + UAV.C_1*(np.linalg.norm(r)**2) + UAV.C_2*(np.linalg.norm(v)**2) + UAV.C_3*(np.linalg.norm(self.a[t])**2)
 
-    def hjb_control(self, uavs, d, T):
-        '''
-        uavs - > the total UAVS
-        d -> distance of communication
-        T -> time instance, an integer
-        '''
-        # print(type(uavs))
-        # print(uavs)
-        nearby_uavs = self.get_nearby_uavs_states(uavs, d, T)
-        min_cost = self._hjb(T)
-        print("hjb_cost ", min_cost)
-
-    def _hjb(self, T):
+    # def hjb_control(self, T):
+    #     '''
+    #     uavs - > the total UAVS
+    #     d -> distance of communication
+    #     T -> time instance, an integer
+    #     '''
+    #     # print(type(uavs))
+    #     # print(uavs)
+    #     nearby_uavs = self.get_nearby_uavs_states(uavs, d, T)
+    #     min_cost = self._hjb(T)
+    #     print("hjb_cost ", min_cost)
+    #     return 
+    def hjb_control(self, T):
         #the derivative of the cost function is simply the sum of the two energy functions (since derivative of integral cancels out)
         delta1_cost = self.delta_total_cost(T, delta=1)
         delta2_cost = self.delta_total_cost(T, delta=2)
@@ -326,6 +328,8 @@ class UAV:
         term2 = (UAV.A_mat.dot(self.local_states[T]) + 1/(4.0 * UAV.C_3) * (UAV.B_mat.dot(UAV.B_mat.T)).dot(delta1_cost) + UAV.B_mat.dot(UAV.v0) * UAV.C_0).T.dot(delta1_cost)
         term3 = 0.5 * (UAV.G_mat.dot(UAV.G_mat.T).dot(delta2_cost)).trace()
         hjb_total = term1 + term2 + term3 + kin_cost + col_cost
+        hjb_total = hjb_total.flatten()[0]
+        # print("flattened",hjb_total)
         return hjb_total
 
     def __str__(self):
@@ -393,7 +397,7 @@ def main():
 
     swarm = UAVCluster(3, d=20)
     swarm.sim()
-    print(swarm.uavs[0].average_cost(1))
+    # print(swarm.uavs[0].average_cost(1))
     # delta_total_cost = swarm.uavs[0].delta_total_cost(1)
     # print("delta_total_cost", delta_total_cost)
 
