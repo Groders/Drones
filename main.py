@@ -6,6 +6,8 @@ import sys
 import sympy
 from sympy import Symbol, lambdify, Matrix, Sum, MatrixSymbol, Derivative
 # from sympy import *
+from apm import *
+
 """
 """
 
@@ -30,13 +32,15 @@ class UAVCluster:
 
     def sim (self, T= 2):
         dW, W = brownian(T=1, N=1000)
-        wind_vel = np.array([100,100])[np.newaxis, :].T
+        wind_vel = np.array([0,0])[np.newaxis, :].T
+        a = []
         for t in range(T):
             for i, uav in enumerate (self.uavs):
                 accel = np.array([np.random.uniform(0, 1),np.random.uniform(0, 1)]).reshape((2,1))
                 delta_v = uav.delta_v(accel,wind_vel,dW[t])
                 # print("delta_v", delta_v)
                 uav.apply_dv(delta_v)
+                a.append(accel)
             
             self.update()
         hjb_cost = [0] * len(self.uavs)
@@ -45,6 +49,41 @@ class UAVCluster:
                 hjb_cost[i] = uav.hjb_control(t)
         print("hjb cost:")
         print(hjb_cost)
+        print("acceleration: {}".format(a))
+
+    def hjb_control(self, uav):
+        accels = generate_mesh_grid_points((-10,10), 11)
+        print("accelerations: ",accels)
+        hjb_values = []
+        print("length: {}".format(len(accels)))
+        for i in range(len(accels)):
+            accel = np.array(accels[i]).reshape((2,1))
+            # get the last state this uav was in
+            local_state = uav.local_states[-1]
+            global_state = uav.global_states[-1]
+
+            updated_local_state = uav.get_new_local_state(local_state, accel)
+            hjb_output = uav._hjb_control(updated_local_state, global_state, accel)
+            # hjb_output = uav._hjb_control(local_state, global_state, accel)
+            hjb_values.append(hjb_output)
+
+        hjb_values = np.array(hjb_values)
+        min_value = hjb_values.min()
+        index = hjb_values.argmin()
+        print(hjb_values)
+        print(hjb_values.min())
+        print(hjb_values.argmin())
+        print(uav.local_states[-1])
+        print("accel: {}".format(accels[index]))
+        opt_accel = np.array(accels[index]).reshape((2,1))
+        
+        updated_local_state = uav.get_new_local_state(uav.local_states[-1], opt_accel)
+        # print("updated_local_state: {}".format(updated_local_state))
+        # out = uav.optimal_accel(updated_local_state, uav.global_states[-1], opt_accel)
+        out = uav.optimal_accel(uav.local_states[-1], uav.global_states[-1], opt_accel)
+        print(out)
+        
+    
 class UAV:
     #constants
     C_0 = 0.1
@@ -65,14 +104,15 @@ class UAV:
                   [0, 1]])
     
     # Wind Velocity
-    v0 = np.array([5,5])[np.newaxis, :].T
-
+    v0 = np.array([2,2])[np.newaxis, :].T
+    
     V0 = np.eye(2) * v0
     
     G_mat = np.array([[0,0],
                         [0,0],
                   [V0[0, 0], V0[0,1]],
                   [V0[1, 0], V0[1,1]]])
+
 
 
     # a = []
@@ -85,6 +125,7 @@ class UAV:
         self.local_states = [np.array([r, v]).reshape((4,1))]
         self.a = []
         self.T = T
+        # self.acceleration_points = generate_mesh_grid_points((-10,10), 111)
 
 
         """define our symbols and functions"""
@@ -121,19 +162,147 @@ class UAV:
         self.delta1_kinetic_cost_lambda = lambdify([px, py, vx, vy, ax, ay], delta1_kinetic_cost, "numpy" )
         self.delta2_kinetic_cost_lambda = lambdify([px, py, vx, vy, ax, ay], delta2_kinetic_cost, "numpy" )
 
+###############################################################################
+    ## Updated stuff here 
+    def single_div (self, local_state, global_state, accel):
+        #return row vector
+        diff = 0.00000001
+        diffs = np.array(np.zeros(4))
+        # initial = self.average_cost_interval (0, T, state = state_1)
+        initial = self.local_state_cost(local_state, accel) + self.global_state_cost(local_state, global_state)
+        for i in range (4):
+            state = np.copy(local_state)
+            state[i,0] += diff
+            diffs[i] = (self.local_state_cost(state, accel) + self.global_state_cost(state, global_state) - initial)/diff
+        print(diffs)
+        return diffs
 
 
+    def optimal_accel(self, local_state, global_state, accel):
+        # deriv = self.partial_psi_wrt_state(local_state, global_state, accel)
+        deriv = self.single_div(local_state, global_state, accel)
+        print("derivative: {}".format(deriv))
+        print("1/2c3: {}".format(1.0/(2*UAV.C_3)))
+        print("b_mat.t: {}".format(UAV.B_mat.T))
+        a = 1.0/(2*UAV.C_3) * UAV.B_mat.T.dot(deriv)
+        return a
+
+    def get_new_local_state(self, old_state, accel):
+        new_state = np.zeros((4,1))
+        new_state[2:4] = old_state[2:4] + accel
+        new_state[0:2] = old_state[0:2] + old_state[2:4]
+        return new_state
+
+    def d_psi_wrt_all(self, local_state, global_state, accel):
+        '''
+        Calculates the derivative of the cost function with respect to all variables (in this case it's the addition of the 2 cost functions)
+        '''
+        total = self.global_state_cost(local_state, global_state) + self.local_state_cost(local_state, accel)
+        return total
+
+    def partial_psi_wrt_state(self, local_state, global_state, accel, delta=1):
+        total = self.partial_global_state_cost(local_state, global_state, delta) + self.partial_local_state_cost(local_state, accel, delta)
+        return total
+
+    def local_state_cost(self, local_state, accel):
+        #position velocity
+        state = local_state
+        r = state[0:2]
+        v = state[2:4]
+        px, py, vx, vy, ax, ay = r[0,0], r[1,0], v[0,0], v[1,0], accel[0,0], accel[1,0]
+        return self.kinetic_cost_lambda(px,py, vx,  vy, ax, ay)     
+
+    def global_state_cost(self, local_state, global_state):
+        n = 1/(len(global_state)+0.000001) # avoid 0 division
+        r = local_state[0:2]
+        v = local_state[2:4]
+        s = 0
+        for state in global_state:
+            r_i = state[0:2]
+            v_i = state[2:4]
+            # print("ostate {}, lstate {}".format(state, local_state))
+            cost = self.collision_cost_lambda(r[0], r[1], v[0],v[1], r_i[0], r_i[1], v_i[0], v_i[1])
+            # print("lambda cost: ", cost)
+            s += cost
+        return s*n
+    
+
+    def partial_local_state_cost(self, local_state, accel, delta=1):
+        px, py, vx, vy, ax, ay = local_state[0,0], local_state[1,0], local_state[2,0], local_state[3,0], accel[0], accel[1]
+        if delta == 1:
+            return self.delta1_kinetic_cost_lambda(px,py,vx,vy,ax,ay)
+        else:
+            delta_2 = self.delta2_kinetic_cost_lambda(px,py, vx,vy,ax,ay)
+            delta_2 = np.array(delta_2).reshape((4,4))
+            return delta_2
+
+
+    def partial_global_state_cost(self, local_state, global_state, delta=1):
+        n = 1/(len(global_state)+0.000001) # avoid 0 division
+        r = local_state[0:2]
+        v = local_state[2:4]
+        if delta==1:
+            s = np.zeros((4,1))
+            for state in global_state:
+                v_i = state[2:4]
+                r_i = state[0:2]
+                cost = self.delta1_collision_cost_lambda(r[0], r[1], v[0],v[1], r_i[0], r_i[1], v_i[0], v_i[1])
+                cost = cost.reshape((4,1))
+                s = np.add(s, cost)
+            return s*n   
+        else:
+            s = np.zeros((4,4))
+            for state in global_state:
+                v_i = state[2:4]
+                r_i = state[0:2]
+                cost = self.delta2_collision_cost_lambda(r[0], r[1], v[0],v[1], r_i[0], r_i[1], v_i[0], v_i[1])
+                cost = np.array(cost).flatten().tolist()
+                new_cost = np.zeros((16))
+                for i, x in enumerate(cost):
+                    if type(x) == list:
+                        new_cost[i] = x[0]
+                    else:
+                        new_cost[i] = x
+                cost = new_cost.reshape((4,4))
+                s = np.add(s, cost)
+            return s*n
+
+    def _hjb_control(self, local_state, global_state, accel):
+        d_cost = self.d_psi_wrt_all(local_state, global_state, accel)
+
+        delta1_cost = self.partial_psi_wrt_state(local_state, global_state, accel, delta=1)
+        delta2_cost = self.partial_psi_wrt_state(local_state, global_state, accel, delta=2)
+        global_cost = self.global_state_cost(local_state, global_state)
+        local_cost  = self.local_state_cost(local_state, accel)
+
+        term1 = d_cost
+        term2 = (UAV.A_mat.dot(local_state) + 1/(4.0 * UAV.C_3) * (UAV.B_mat.dot(UAV.B_mat.T)).dot(delta1_cost) + UAV.B_mat.dot(UAV.v0) * UAV.C_0).T.dot(delta1_cost)
+        term3 = 0.5 * (UAV.G_mat.dot(UAV.G_mat.T).dot(delta2_cost)).trace()
+        hjb_total = term1 + term2 + term3 + local_cost + global_cost
+        hjb_total = hjb_total.flatten()[0]
+
+        return hjb_total
+
+    def psi_cost(self, t):
+        total_cost = 0
+        T = self.T
+        # list_of_costs = []
+        for t in range(T):
+            px, py, vx, vy, ax, ay = self.local_states[t][0,0], self.local_states[t][1,0], self.local_states[t][2,0], self.local_states[t][3,0], self.a[t][0], self.a[t][1]
+            total_cost += UAV.C_4*self.collision_avoidance_cost(T) + self.kinetic_cost_lambda(px,py,vx,vy, ax,ay)
+        return total_cost
+
+    ############################################################################################
     def total_cost(self, t):
         total_cost = 0
+        T = self.T
+        # list_of_costs = []
         for t in range(T):
-            px, py, vx, vy, ax, ay = self.local_states[T][0,0], self.local_states[T][1,0], self.local_states[T][2,0], self.local_states[T][3,0], self.a[T][0], self.a[T][1]
+            px, py, vx, vy, ax, ay = self.local_states[t][0,0], self.local_states[t][1,0], self.local_states[t][2,0], self.local_states[t][3,0], self.a[t][0], self.a[t][1]
             total_cost += UAV.C_4*self.collision_avoidance_cost(T) + self.kinetic_cost_lambda(px,py,vx,vy, ax,ay)
         return total_cost
 
     def delta_total_cost(self, t, delta=1):
-        # print("kinetic cost: ", self.delta_kinetic_cost(t, delta))
-        # print("collision cost:", self.delta_collision_cost(t, delta))
-        # print(self.delta_kinetic_cost(t, delta) + self.delta_collision_cost(t, delta))
         total_cost = self.delta_kinetic_cost(t, delta) + self.delta_collision_cost(t, delta)
         return total_cost
 
@@ -149,7 +318,15 @@ class UAV:
             # print(delta_2.shape)
             # sys.exit(0)
             return delta_2
-       
+
+    def delta_kinetic_cost2(self, state, accel, delta=1):
+        px, py, vx, vy, ax, ay = state[0,0], state[1,0], state[2,0], state[3,0], accel[0][0], accel[1][0]
+        if delta == 1:
+            return self.delta1_kinetic_cost_lambda(px,py, vx,  vy, ax, ay)
+        else:
+            delta_2 = self.delta2_kinetic_cost_lambda(px,py, vx,  vy, ax, ay)
+            delta_2 = np.array(delta_2).reshape((4,4))
+            return delta_2
 
     def delta_collision_cost(self, t, delta=1):
         global_state = self.global_states[t]
@@ -180,16 +357,8 @@ class UAV:
                     else:
                         new_cost[i] = x
                 cost = new_cost.reshape((4,4))
-                # print("new cost", new_cost)
-                # print("flattened_cost", cost)
-                # print(np.concatenate(cost).ravel())
-                # print("delta2", cost.shape)
-                # sys.exit(0)
                 s = np.add(s, cost)
-
             return s*n
-           
-
 
     def collision_cost(self, t):
         global_state = self.global_states[t]
@@ -205,7 +374,8 @@ class UAV:
             r_i = state[0:2]
             s += (np.linalg.norm(v - v_i)**2) / ((UAV.E + (np.linalg.norm(r - r_i)**2))**UAV.BETA)
         print("orig cost:", s)
-        return s*prefix        
+        return s*prefix     
+
     def collision_avoidance_cost(self, t):
         global_state = self.global_states[t]
         n = 1/(len(global_state)+0.000001) # avoid 0 division
@@ -223,6 +393,7 @@ class UAV:
             s += cost
         print("col avoid", s)
         return s*n
+
     def update(self,swarm,d):
         print(swarm)
         print(d)
@@ -320,6 +491,8 @@ class UAV:
     #     return 
     def hjb_control(self, T):
         #the derivative of the cost function is simply the sum of the two energy functions (since derivative of integral cancels out)
+    
+
         delta1_cost = self.delta_total_cost(T, delta=1)
         delta2_cost = self.delta_total_cost(T, delta=2)
         kin_cost = self.kinetic_cost(T) 
@@ -332,12 +505,20 @@ class UAV:
         # print("flattened",hjb_total)
         return hjb_total
 
+
     def __str__(self):
         return "{} {}".format(self.get_local_position(), self.get_local_velocity())
 
     def __repr__(self):
         return "p:{} v:{}".format(self.get_local_position().T, self.get_local_velocity().T)#{'pos': self.get_position(), 'vel': self.get_velocity()}
         
+
+def apply_acceleration(accel, old_state):
+    new_state = np.zeros((4,1))
+    new_state[2:4] = old_state[2:4] + accel
+    new_state[0:2] = old_state[0:2] + new_state[2:4]
+    return new_state
+
 
 def wind_velocity():
     t_0 = 0 # define model parameters
@@ -363,8 +544,8 @@ def wind_velocity():
 def generate_uavs(n):
     uavs = []
     for i in range(n):
-        r = [np.random.uniform(0, 10), np.random.uniform(0, 10)]
-        v = [np.random.uniform(0, 10), np.random.uniform(0, 10)]
+        r = [np.random.uniform(-10, 10), np.random.uniform(-10, 10)]
+        v = [np.random.uniform(-5, 5), np.random.uniform(-5, 5)]
         uavs.append(UAV(r,v))
     return uavs
 
@@ -384,22 +565,29 @@ def brownian(T=1, N=100):
         W[i] = dW[i-1] + dW[i]
     return dW, W
 
+
+def generate_mesh_grid_points(interval=(-5,5), samples=11):
+    nx = np.linspace(interval[0], interval[1], samples)
+    x, y = np.meshgrid(nx, nx, indexing='xy')
+    point = []
+    for i in range(len(nx)):
+        for j in range(len(nx)):
+            point.append([x[i,j], y[i,j]])
+    points = np.array(point)
+    return points
+
+
 def main():
-
-
-    # a = np.array([1,1])
-    # b = np.array([2,2])
-
-    # print(np.linalg.norm((a-b))**2 )
-    # print(a-b)
-    # print(abs((a[0]-b[0])**2 + (a[1]-b[1]**2)))
-    # sys.exit(0)
-
-    swarm = UAVCluster(3, d=20)
+    swarm = UAVCluster(1, d=20)
     swarm.sim()
-    # print(swarm.uavs[0].average_cost(1))
-    # delta_total_cost = swarm.uavs[0].delta_total_cost(1)
-    # print("delta_total_cost", delta_total_cost)
+    uav1 = swarm.uavs[0]
+    
+    print(uav1._hjb_control(uav1.local_states[0], uav1.global_states[0], uav1.a[0]))
+    print(uav1.hjb_control(0))
+    print(uav1.a)
+
+    swarm.hjb_control(uav1)
+    # points = generate_mesh_grid_points((-5,5), 11)
 
 
     '''
