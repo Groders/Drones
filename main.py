@@ -30,7 +30,7 @@ class UAVCluster:
     #self, a, v0, dW, debug=False, c0 = 0.1
     c0 = 0.1
 
-    def sim (self, T= 2):
+    def sim (self, T=1):
         dW, W = brownian(T=1, N=1000)
         wind_vel = np.array([0,0])[np.newaxis, :].T
         a = []
@@ -51,7 +51,7 @@ class UAVCluster:
         print(hjb_cost)
         print("acceleration: {}".format(a))
 
-    def hjb_control(self, uav, wind_vel, brown):
+    def hjb_control(self, uav):
         accels = generate_mesh_grid_points((-10,10), 11)
         print("accelerations: ",accels)
         hjb_values = []
@@ -77,9 +77,9 @@ class UAVCluster:
         print("accel: {}".format(accels[index]))
         opt_accel = np.array(accels[index]).reshape((2,1))
 
-        delta_v = uav.delta_v(opt_accel,wind_vel,brown)
-        print("deltaV = {}".format(delta_v))
-        updated_local_state = uav.get_new_local_state(uav.local_states[-1], delta_v)
+        # delta_v = uav.delta_v(opt_accel,wind_vel,brown)
+        # print("deltaV = {}".format(delta_v))
+        updated_local_state = uav.get_new_local_state(uav.local_states[-1], opt_accel)
         # print("updated_local_state: {}".format(updated_local_state))
         # out = uav.optimal_accel(updated_local_state, uav.global_states[-1], opt_accel)
         out = uav.optimal_accel(uav.local_states[-1], uav.global_states[-1], opt_accel)
@@ -108,17 +108,12 @@ class UAV:
     # Wind Velocity
     v0 = np.array([2,2])[np.newaxis, :].T
     
-    V0 = np.eye(2) * v0
-    
-    G_mat = np.array([[0,0],
-                        [0,0],
-                  [V0[0, 0], V0[0,1]],
-                  [V0[1, 0], V0[1,1]]])
+
 
 
 
     # a = []
-    def __init__(self, r, v, T=0):
+    def __init__(self, r, v, brownian_noise, T=0):
         '''
         R -> position vector of R^2
         V -> velecity vector of R^2
@@ -128,7 +123,13 @@ class UAV:
         self.a = []
         self.T = T
         # self.acceleration_points = generate_mesh_grid_points((-10,10), 111)
+        self.brownian_noise = brownian_noise #dW and w
 
+        self.V0 = calculate_wind_covariance(UAV.v0, brownian_noise[1])
+        self.G_mat = np.array([[0,0],
+                        [0,0],
+                  [self.V0[0, 0], self.V0[0,1]],
+                  [self.V0[1, 0], self.V0[1,1]]])
 
         """define our symbols and functions"""
         px, py, vx, vy = Symbol('px') ,Symbol('py'), Symbol('vx'), Symbol('vy') 
@@ -279,7 +280,7 @@ class UAV:
 
         term1 = d_cost
         term2 = (UAV.A_mat.dot(local_state) + 1/(4.0 * UAV.C_3) * (UAV.B_mat.dot(UAV.B_mat.T)).dot(delta1_cost) + UAV.B_mat.dot(UAV.v0) * UAV.C_0).T.dot(delta1_cost)
-        term3 = 0.5 * (UAV.G_mat.dot(UAV.G_mat.T).dot(delta2_cost)).trace()
+        term3 = 0.5 * (self.G_mat.dot(self.G_mat.T).dot(delta2_cost)).trace()
         hjb_total = term1 + term2 + term3 + local_cost + global_cost
         hjb_total = hjb_total.flatten()[0]
 
@@ -446,8 +447,8 @@ class UAV:
         # V0 = np.eye(2) * v0
         delta_W = dW.reshape((2,1))
         if debug:
-            print("a:{}\nc0:{}\nvel:{}\nv0:{}\nV0:{}\ndW:{}".format(a, c0, self.get_local_velocity(), UAV.v0, UAV.V0, delta_W))
-        dv = a - c0 * (self.get_local_velocity() - UAV.v0) + UAV.V0.dot(delta_W)
+            print("a:{}\nc0:{}\nvel:{}\nv0:{}\nV0:{}\ndW:{}".format(a, c0, self.get_local_velocity(), UAV.v0, self.V0, delta_W))
+        dv = a - c0 * (self.get_local_velocity() - UAV.v0) + self.V0.dot(delta_W)
         return dv
 
     def delta_r(self, T):
@@ -501,7 +502,7 @@ class UAV:
         col_cost = self.collision_avoidance_cost(T) 
         term1 = kin_cost + col_cost
         term2 = (UAV.A_mat.dot(self.local_states[T]) + 1/(4.0 * UAV.C_3) * (UAV.B_mat.dot(UAV.B_mat.T)).dot(delta1_cost) + UAV.B_mat.dot(UAV.v0) * UAV.C_0).T.dot(delta1_cost)
-        term3 = 0.5 * (UAV.G_mat.dot(UAV.G_mat.T).dot(delta2_cost)).trace()
+        term3 = 0.5 * (self.G_mat.dot(self.G_mat.T).dot(delta2_cost)).trace()
         hjb_total = term1 + term2 + term3 + kin_cost + col_cost
         hjb_total = hjb_total.flatten()[0]
         # print("flattened",hjb_total)
@@ -546,9 +547,10 @@ def wind_velocity():
 def generate_uavs(n):
     uavs = []
     for i in range(n):
+
         r = [np.random.uniform(-10, 10), np.random.uniform(-10, 10)]
         v = [np.random.uniform(-5, 5), np.random.uniform(-5, 5)]
-        uavs.append(UAV(r,v))
+        uavs.append(UAV(r,v,brownian()))
     return uavs
 
 def brownian(T=1, N=100):
@@ -578,23 +580,32 @@ def generate_mesh_grid_points(interval=(-5,5), samples=11):
     points = np.array(point)
     return points
 
-
+def calculate_wind_covariance(expected_wind_velocity, brownian_noise):
+    wind_samples = np.zeros((100,2))
+    for i, noise in enumerate(brownian_noise):
+        real_wind_vel = expected_wind_velocity + np.array(noise).reshape(2,1)
+        wind_samples[i] = real_wind_vel.reshape(2,)   
+    cov = np.cov(wind_samples.T)
+    return cov
+    
 def main():
     swarm = UAVCluster(1, d=20)
     swarm.sim()
     uav1 = swarm.uavs[0]
     
-    print(uav1._hjb_control(uav1.local_states[0], uav1.global_states[0], uav1.a[0]))
-    print(uav1.hjb_control(0))
-    print(uav1.a)
+    swarm.hjb_control(uav1)
+    # print(uav1._hjb_control(uav1.local_states[0], uav1.global_states[0], uav1.a[0]))
+    # print(uav1.hjb_control(0))
+    # print(uav1.a)
     
 
-    brown = brownian()
+    dw, w = brownian()
     # print(brown[0][0])
     # sys.exit(0)
-    wind_vel = np.array([2,2])[np.newaxis, :].T
-    swarm.hjb_control(uav1, wind_vel, brown[0][0])
+    # wind_vel = np.array([2,2])[np.newaxis, :].T
+    # swarm.hjb_control(uav1, wind_vel, brown[0][0])
     # points = generate_mesh_grid_points((-5,5), 11)
+
 
 
     '''
