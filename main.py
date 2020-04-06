@@ -46,12 +46,12 @@ class UAVCluster:
         hjb_cost = [0] * len(self.uavs)
         for t in range(T):
             for i, uav in enumerate (self.uavs):
-                hjb_cost[i] = uav.hjb_control(t)
+                hjb_cost[i] = uav.hjb_control(t,wind_vel, dW[t])
         print("hjb cost:")
         print(hjb_cost)
         print("acceleration: {}".format(a))
 
-    def hjb_control(self, uav):
+    def hjb_control(self, uav,wind_vel, brown):
         accels = generate_mesh_grid_points((-10,10), 11)
         print("accelerations: ",accels)
         hjb_values = []
@@ -76,8 +76,10 @@ class UAVCluster:
         print(uav.local_states[-1])
         print("accel: {}".format(accels[index]))
         opt_accel = np.array(accels[index]).reshape((2,1))
-        
-        updated_local_state = uav.get_new_local_state(uav.local_states[-1], opt_accel)
+
+        delta_v = uav.delta_v(accel,wind_vel,brown)
+        print("deltaV = {}".formate(delta_v))
+        updated_local_state = uav.get_new_local_state(uav.local_states[-1], delta_v)
         # print("updated_local_state: {}".format(updated_local_state))
         # out = uav.optimal_accel(updated_local_state, uav.global_states[-1], opt_accel)
         out = uav.optimal_accel(uav.local_states[-1], uav.global_states[-1], opt_accel)
