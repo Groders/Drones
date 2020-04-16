@@ -6,15 +6,16 @@ import sys
 import sympy
 from sympy import Symbol, lambdify, Matrix, Sum, MatrixSymbol, Derivative
 # from sympy import *
+import json
 
 """
 """
 
 class UAVCluster:
-    def __init__(self, numUAVs, d=1):
-        self.uavs = generate_uavs(numUAVs)
+    def __init__(self, data):
+        self.uavs = generate_uavs(data)
         self.T = 0
-        self.d = d
+        self.d = data["com_d"]
         # intialize each UAV's nearest neighors for state 0
         # for uav in self.uavs:
         #     uav.global_states.append(uav.get_nearby_uavs_states(self.uavs,self.d,-1))
@@ -160,11 +161,22 @@ class UAV:
     v0 = np.array([10,-10])[np.newaxis, :].T
     
     # a = []
-    def __init__(self, r, v, brownian_noise, T=0):
+    def __init__(self, r, v, brownian_noise, data, T=0):
         '''
         R -> position vector of R^2
         V -> velecity vector of R^2
         '''
+        #set the constants
+        self.C_0 = data["C_0"] 
+        self.C_1 = data["C_1"] 
+        self.C_2 = data["C_2"] 
+        self.C_3 = data["C_3"] 
+        self.C_4 = data["C_4"] 
+        self.v0 = np.array([data["wind_v"][0],data["wind_v"][1]])[np.newaxis, :].T
+
+
+
+
         self.global_states = []
         self.local_states = [np.array([r, v]).reshape((4,1))]
         self.a = []
@@ -172,7 +184,7 @@ class UAV:
         # self.acceleration_points = generate_mesh_grid_points((-10,10), 111)
         self.brownian_noise = brownian_noise #dW and w
 
-        self.V0 = calculate_wind_covariance(UAV.v0, brownian_noise[1][0])
+        self.V0 = calculate_wind_covariance(self.v0, brownian_noise[1][0])
         self.G_mat = np.array([[0,0],
                         [0,0],
                   [self.V0[0, 0], self.V0[0,1]],
@@ -193,7 +205,7 @@ class UAV:
         state = Matrix([position, velocity])
         acceleration = Matrix([ax, ay])
 
-        kinetic_cost_expression = (velocity.dot(position)/((px**2 + py**2)**0.5) + UAV.C_1 * (px**2 + py**2) + UAV.C_2*(vx**2 + vy**2) + UAV.C_3*(ax**2 + ay**2))
+        kinetic_cost_expression = (velocity.dot(position)/((px**2 + py**2)**0.5) + self.C_1 * (px**2 + py**2) + self.C_2*(vx**2 + vy**2) + self.C_3*(ax**2 + ay**2))
         delta1_kinetic_cost = kinetic_cost_expression.diff(state)
         delta2_kinetic_cost = delta1_kinetic_cost.diff(state)
         # ||v-vi||^2 -> 
@@ -231,7 +243,7 @@ class UAV:
         print(diffs)
         return diffs
     def update_cov_max(self,T):
-        self.V0 = calculate_wind_covariance(UAV.v0, self.brownian_noise[1][T])
+        self.V0 = calculate_wind_covariance(self.v0, self.brownian_noise[1][T])
 
     def delta_state (self, initial_state, accel, T):
         dW = self.brownian_noise[0][T]
@@ -245,9 +257,9 @@ class UAV:
         # deriv = self.partial_psi_wrt_state(local_state, global_state, accel)
         deriv = self.single_div(local_state, global_state, accel)
         print("derivative: {}".format(deriv))
-        print("1/2c3: {}".format(1.0/(2*UAV.C_3)))
+        print("1/2c3: {}".format(1.0/(2*self.C_3)))
         print("b_mat.t: {}".format(UAV.B_mat.T))
-        a = 1.0/(2*UAV.C_3) * UAV.B_mat.T.dot(deriv)
+        a = 1.0/(2*self.C_3) * UAV.B_mat.T.dot(deriv)
         return a
 
     def get_new_local_state(self, old_state, accel):
@@ -339,7 +351,7 @@ class UAV:
         local_cost  = self.local_state_cost(local_state, accel)
 
         term1 = d_cost
-        term2 = (UAV.A_mat.dot(local_state) + 1/(4.0 * UAV.C_3) * (UAV.B_mat.dot(UAV.B_mat.T)).dot(delta1_cost) + UAV.B_mat.dot(UAV.v0) * UAV.C_0).T.dot(delta1_cost)
+        term2 = (UAV.A_mat.dot(local_state) + 1/(4.0 * self.C_3) * (UAV.B_mat.dot(UAV.B_mat.T)).dot(delta1_cost) + UAV.B_mat.dot(self.v0) * self.C_0).T.dot(delta1_cost)
         term3 = 0.5 * (self.G_mat.dot(self.G_mat.T).dot(delta2_cost)).trace()
         hjb_total = term1 + term2 + term3 + local_cost + global_cost
         hjb_total = hjb_total.flatten()[0]
@@ -352,7 +364,7 @@ class UAV:
         # list_of_costs = []
         for t in range(T):
             px, py, vx, vy, ax, ay = self.local_states[t][0,0], self.local_states[t][1,0], self.local_states[t][2,0], self.local_states[t][3,0], self.a[t][0], self.a[t][1]
-            total_cost += UAV.C_4*self.collision_avoidance_cost(T) + self.kinetic_cost_lambda(px,py,vx,vy, ax,ay)
+            total_cost += self.C_4*self.collision_avoidance_cost(T) + self.kinetic_cost_lambda(px,py,vx,vy, ax,ay)
         return total_cost
 
     ############################################################################################
@@ -362,7 +374,7 @@ class UAV:
         # list_of_costs = []
         for t in range(T):
             px, py, vx, vy, ax, ay = self.local_states[t][0,0], self.local_states[t][1,0], self.local_states[t][2,0], self.local_states[t][3,0], self.a[t][0], self.a[t][1]
-            total_cost += UAV.C_4*self.collision_avoidance_cost(T) + self.kinetic_cost_lambda(px,py,vx,vy, ax,ay)
+            total_cost += self.C_4*self.collision_avoidance_cost(T) + self.kinetic_cost_lambda(px,py,vx,vy, ax,ay)
         return total_cost
 
     def delta_total_cost(self, t, delta=1):
@@ -510,8 +522,8 @@ class UAV:
         # V0 = np.eye(2) * v0
         delta_W = dW.reshape((2,1))
         if debug:
-            print("a:{}\nc0:{}\nvel:{}\nv0:{}\nV0:{}\ndW:{}".format(a, c0, self.get_local_velocity(), UAV.v0, self.V0, delta_W))
-        dv = a - c0 * (self.get_local_velocity() - UAV.v0) + self.V0.dot(delta_W)
+            print("a:{}\nc0:{}\nvel:{}\nv0:{}\nV0:{}\ndW:{}".format(a, c0, self.get_local_velocity(), self.v0, self.V0, delta_W))
+        dv = a - c0 * (self.get_local_velocity() - self.v0) + self.V0.dot(delta_W)
         return dv
 
 
@@ -551,13 +563,13 @@ def wind_velocity():
     plt.plot(t,y)
     plt.show()
 
-def generate_uavs(n):
+def generate_uavs(data):
     uavs = []
-    for i in range(n):
+    for i in range(data["Num_UAVs"]):
 
-        r = [np.random.uniform(-3, 3) + 100, np.random.uniform(-3, 3) + 100]
+        r = [np.random.uniform(-3, 3) + data["x_pos"], np.random.uniform(-3, 3) + data["y_pos"]]
         v = [np.random.uniform(0, 0), np.random.uniform(0, 0)]
-        uavs.append(UAV(r,v,brownian()))
+        uavs.append(UAV(r,v,brownian(), data))
     return uavs
 
 def brownian(T=1, N=100):
@@ -598,11 +610,19 @@ def calculate_wind_covariance(expected_wind_velocity, brownian_noise):
 
 
 def main():
+    cfg = "Example_1.json"
+    if not len(sys.argv) == 2:
+        print ('Using default config file')
+    else: 
+        cfg = sys.argv[1]
 
-    swarm = UAVCluster(10, d=1)
-    swarm.simulate(10)
-    swarm.plot_uav_positions()
-    swarm.plot_collisions(0.5)
+    with open(cfg) as json_file:
+        data = json.load(json_file)
+        print(data)
+        swarm = UAVCluster(data)
+        swarm.simulate(10)
+        swarm.plot_uav_positions()
+        #swarm.plot_collisions(0.5)
 
 if __name__ == "__main__":
     main()
