@@ -6,6 +6,8 @@ import sys
 import sympy
 from sympy import Symbol, lambdify, Matrix, Sum, MatrixSymbol, Derivative
 # from sympy import *
+import math
+import matplotlib
 
 """
 """
@@ -65,27 +67,39 @@ class UAVCluster:
                 global_state = uav.get_nearby_uavs_states(self.uavs, self.d, -1)
                 uav.update_global_state(global_state)
         
-    def plot_uav_positions(self):
+    def plot_uav_positions(self, with_collisions=False):
         for uav in self.uavs:
             positions = [state[0:2].reshape((2,)).tolist() for state in uav.local_states]
             positions = np.array(positions)
             plt.plot(positions[:, 0], positions[:, 1])
             print(positions)
+
+        if with_collisions:
+            collisions = self.plot_collisions(0.1)
+            collisions = np.array(collisions)
+            plt.plot( collisions[:,0],  collisions[:, 1],  marker='x', linestyle = 'None')
         plt.show()
 
     def is_collision(self, pos1, pos2, d):
-        if np.linalg.norm(pos1-pos2) < d :
+        distance = np.linalg.norm(pos1-pos2) 
+        if distance < d :
+            print("Collision between {} and {}: d={}".format(pos1, pos2, distance))
             return True
         return False
-    # def plot_collisions(self, d):
-    #     numIterations = len(self.uavs[-1].local_states)
-    #     collisions = []
-    #     for i in range(numIterations):
-    #         states = [uav.local_states[i][0:2].reshape((2,)).tolist() for uav in self.uavs]
-    #         if self.is_collision()
-    #         print(states)
-    #     print(numIterations)
 
+    def plot_collisions(self, d):
+        numIterations = len(self.uavs[-1].local_states)
+        collisions = []
+        for i in range(numIterations):
+            states = np.array([uav.local_states[i][0:2].reshape((2,)).tolist() for uav in self.uavs])
+            min_d = math.inf
+            for x in range(len(states)):
+                for y in range(x+1, len(states)):
+                    if self.is_collision(states[x], states[y], d):
+                        mid_point = [(states[x][0] + states[y][0])/2, (states[x][1] + states[y][1])/2]
+                        collisions.append(mid_point)
+
+        return collisions
 
     def opt_accel(self, uav, accels):
         hjb_values = []
@@ -552,12 +566,22 @@ def wind_velocity():
     plt.show()
 
 def generate_uavs(n):
+    interval=(-3,3)
+    nx = np.linspace(interval[0], interval[1], int(math.sqrt(n))+1)
+    x, y = np.meshgrid(nx, nx, indexing='xy')
+    x = x.flatten()
+    y = y.flatten()
+    # print(nx)
+    # print(x, y)
+    # print(x.shape)
+    # print(y.shape)
     uavs = []
     for i in range(n):
-
-        r = [np.random.uniform(-3, 3) + 100, np.random.uniform(-3, 3) + 100]
-        v = [np.random.uniform(0, 0), np.random.uniform(0, 0)]
+        r = [x[i] + 100, y[i] + 100]
+        v = [0, 0]
         uavs.append(UAV(r,v,brownian()))
+    # print(uavs)
+    # sys.exit()
     return uavs
 
 def brownian(T=1, N=100):
@@ -600,9 +624,10 @@ def calculate_wind_covariance(expected_wind_velocity, brownian_noise):
 def main():
 
     swarm = UAVCluster(10, d=1)
-    swarm.simulate(10)
+    swarm.simulate(30)
     swarm.plot_uav_positions()
-    swarm.plot_collisions(0.5)
+    swarm.plot_uav_positions(True)
+    # swarm.plot_collisions(0.1)
 
 if __name__ == "__main__":
     main()
