@@ -7,12 +7,15 @@ import sympy
 from sympy import Symbol, lambdify, Matrix, Sum, MatrixSymbol, Derivative
 # from sympy import *
 from apm import *
+import json
+import argparse
+
 
 """
 """
 
 class UAVCluster:
-    def __init__(self, numUAVs, d=5):
+    def __init__(self, numUAVs,cfg, d=5):
         self.uavs = generate_uavs(numUAVs)
         self.T = 0
         self.d = d
@@ -617,7 +620,13 @@ def calculate_wind_covariance(expected_wind_velocity, brownian_noise):
     return cov
     
 def main():
-    swarm = UAVCluster(3, d=5)
+
+    if not len(sys.argv) == 2:
+        print("Usage: python main.py config_file.json")
+
+    cfg = sys.argv[1]
+
+    swarm = UAVCluster(3, cfg,d=5)
     swarm.sim_v2()
     swarm.plot_uav_positions()
 
