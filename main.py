@@ -12,7 +12,7 @@ from apm import *
 """
 
 class UAVCluster:
-    def __init__(self, numUAVs, d=5):
+    def __init__(self, numUAVs, d=1):
         self.uavs = generate_uavs(numUAVs)
         self.T = 0
         self.d = d
@@ -33,23 +33,65 @@ class UAVCluster:
     def sim (self, T=1):
         dW, W = brownian(T=1, N=1000)
         wind_vel = np.array([0,0])[np.newaxis, :].T
-        a = []
+
         for t in range(T):
             for i, uav in enumerate (self.uavs):
                 accel = np.array([np.random.uniform(0, 1),np.random.uniform(0, 1)]).reshape((2,1))
                 delta_v = uav.delta_v(accel,wind_vel,dW[t])
-                # print("delta_v", delta_v)
                 uav.apply_dv(delta_v)
-                a.append(accel)
             
             self.update()
         hjb_cost = [0] * len(self.uavs)
         for t in range(T):
             for i, uav in enumerate (self.uavs):
                 hjb_cost[i] = uav.hjb_control(t)
-        print("hjb cost:")
-        print(hjb_cost)
-        print("acceleration: {}".format(a))
+
+
+    def simulate(self, T=50):
+        # dW, W = brownian(T=1, N=20)
+        
+        accels = generate_mesh_grid_points((-5,5), 11)
+        self.update()
+        for t in range(T):
+            print("Time: {}".format(t))
+            for i, uav in enumerate(self.uavs):
+                opt_accel = self.opt_accel(uav, accels)
+                delta_state = uav.delta_state(uav.local_states[-1], opt_accel, t)
+                uav.apply_ds(delta_state, opt_accel)
+                uav.update_cov_max(t)
+                # new_state = apply_acceleration(opt_accel, uav.local_states[-1])
+                # uav.update_local_state(new_state, opt_accel)
+
+            for i, uav in enumerate(self.uavs):
+                global_state = uav.get_nearby_uavs_states(self.uavs, self.d, -1)
+                uav.update_global_state(global_state)
+        
+    def plot_uav_positions(self):
+        for uav in self.uavs:
+            positions = [state[0:2].reshape((2,)).tolist() for state in uav.local_states]
+            positions = np.array(positions)
+            plt.plot(positions[:, 0], positions[:, 1])
+            print(positions)
+        plt.show()
+
+    def opt_accel(self, uav, accels):
+        hjb_values = []
+        for i in range(len(accels)):
+            accel = np.array(accels[i]).reshape((2,1))
+            # get the last state this uav was in
+            local_state = uav.local_states[-1]
+            global_state = uav.global_states[-1]
+
+            updated_local_state = uav.get_new_local_state(local_state, accel)
+            hjb_output = uav._hjb_control(updated_local_state, global_state, accel)
+            # hjb_output = uav._hjb_control(local_state, global_state, accel)
+            hjb_values.append(hjb_output)
+        hjb_values = np.array(hjb_values)
+        min_value = hjb_values.min()
+        index = hjb_values.argmin()
+        opt_accel = np.array(accels[index]).reshape((2,1))
+        return opt_accel
+
 
     def hjb_control(self, uav):
         accels = generate_mesh_grid_points((-10,10), 11)
@@ -77,21 +119,17 @@ class UAVCluster:
         print("accel: {}".format(accels[index]))
         opt_accel = np.array(accels[index]).reshape((2,1))
 
-        # delta_v = uav.delta_v(opt_accel,wind_vel,brown)
-        # print("deltaV = {}".format(delta_v))
         updated_local_state = uav.get_new_local_state(uav.local_states[-1], opt_accel)
-        # print("updated_local_state: {}".format(updated_local_state))
-        # out = uav.optimal_accel(updated_local_state, uav.global_states[-1], opt_accel)
         out = uav.optimal_accel(uav.local_states[-1], uav.global_states[-1], opt_accel)
         print(out)
         
     
 class UAV:
     #constants
-    C_0 = 0.1
-    C_1 = 100
-    C_2 = 1.5
-    C_3 = 1.5
+    C_0 = 0.2 #0.1 in paper
+    C_1 = 1000
+    C_2 = 50
+    C_3 = 50
     C_4 = 0.5
     BETA = 1
     E = 0.001
@@ -106,12 +144,8 @@ class UAV:
                   [0, 1]])
     
     # Wind Velocity
-    v0 = np.array([2,2])[np.newaxis, :].T
+    v0 = np.array([10,-10])[np.newaxis, :].T
     
-
-
-
-
     # a = []
     def __init__(self, r, v, brownian_noise, T=0):
         '''
@@ -125,13 +159,14 @@ class UAV:
         # self.acceleration_points = generate_mesh_grid_points((-10,10), 111)
         self.brownian_noise = brownian_noise #dW and w
 
-        self.V0 = calculate_wind_covariance(UAV.v0, brownian_noise[1])
+        self.V0 = calculate_wind_covariance(UAV.v0, brownian_noise[1][0])
         self.G_mat = np.array([[0,0],
                         [0,0],
                   [self.V0[0, 0], self.V0[0,1]],
                   [self.V0[1, 0], self.V0[1,1]]])
 
         """define our symbols and functions"""
+        """  Using symbols from sympy, """
         px, py, vx, vy = Symbol('px') ,Symbol('py'), Symbol('vx'), Symbol('vy') 
         opx, opy, ovx, ovy = Symbol('opx') ,Symbol('opy'), Symbol('ovx'), Symbol('ovy') 
         oposition = Matrix([opx, opy])
@@ -152,21 +187,24 @@ class UAV:
         collision_avoidance_cost = ((vx-ovx)**2 + (ovy-vy)**2)/((UAV.E + ((px-opx)**2 + (py - opy)**2))**UAV.BETA)
         delta_collision_avoidance_cost = collision_avoidance_cost.diff(state)
         second_delta_collision_avoidance_cost = delta_collision_avoidance_cost.diff(state)
-        # collision_avoidance_cost = 1/n * (ovelocity-velocity).norm()**2/(UAV.E + (oposition-position).norm()**2)**UAV.BETA
-        # collision_avoidance_cost = (ovelocity-velocity).T*(ovelocity-velocity)/((UAV.E + (oposition-position).T*(oposition-position))**UAV.BETA)
+
         self.collision_cost_lambda = lambdify([px,py,vx,vy,opx,opy,ovx,ovy], collision_avoidance_cost, "numpy")
         self.delta1_collision_cost_lambda = lambdify([px,py,vx,vy,opx,opy,ovx,ovy], delta_collision_avoidance_cost, "numpy") # this is the first derivative with respect to state
         self.delta2_collision_cost_lambda = lambdify([px,py,vx,vy,opx,opy,ovx,ovy], second_delta_collision_avoidance_cost, "numpy") # this is the first derivative with respect to state
-        # print("asdfasdfasdf")
-        print(delta_collision_avoidance_cost)
-        # print("col", collision_avoidance_cost)
-        # print(delta_kinetic_cost)
+
         self.kinetic_cost_lambda = lambdify([px, py, vx, vy, ax, ay], kinetic_cost_expression, "numpy" )
         self.delta1_kinetic_cost_lambda = lambdify([px, py, vx, vy, ax, ay], delta1_kinetic_cost, "numpy" )
         self.delta2_kinetic_cost_lambda = lambdify([px, py, vx, vy, ax, ay], delta2_kinetic_cost, "numpy" )
 
 ###############################################################################
     ## Updated stuff here 
+
+    def apply_ds (self, ds, acc):
+        new_state = np.zeros((4,1))
+        new_state = self.local_states[-1] + ds
+        self.local_states.append(new_state)
+        self.a.append(acc)
+
     def single_div (self, local_state, global_state, accel):
         #return row vector
         diff = 0.00000001
@@ -179,7 +217,16 @@ class UAV:
             diffs[i] = (self.local_state_cost(state, accel) + self.global_state_cost(state, global_state) - initial)/diff
         print(diffs)
         return diffs
+    def update_cov_max(self,T):
+        self.V0 = calculate_wind_covariance(UAV.v0, self.brownian_noise[1][T])
 
+    def delta_state (self, initial_state, accel, T):
+        dW = self.brownian_noise[0][T]
+        term1 = self.A_mat @ initial_state
+        term2 = self.B_mat @ (np.add(accel,(self.C_0*self.v0)))
+        term3 = np.reshape(self.G_mat @ dW, (4,1))
+        s = term1 + term2 + term3
+        return s
 
     def optimal_accel(self, local_state, global_state, accel):
         # deriv = self.partial_psi_wrt_state(local_state, global_state, accel)
@@ -397,13 +444,17 @@ class UAV:
         print("col avoid", s)
         return s*n
 
-    def update(self,swarm,d):
-        print(swarm)
-        print(d)
-
-        print(self.get_nearby_uavs_states(swarm,d,-1))
-        self.global_states.append(self.get_nearby_uavs_states(swarm,d,-1))
+    def update(self,swarm, d):
+        self.global_states.append(self.get_nearby_uavs_states(swarm, d, -1))
         self.T += 1
+
+    def update_local_state(self, local_state, accel):
+        self.local_states.append(local_state)
+        self.a.append(accel)
+
+    def update_global_state(self, global_state):
+        self.global_states.append(global_state)
+
 
     def get_global_state(self, T=-1):
         return self.global_states[T]
@@ -428,10 +479,9 @@ class UAV:
         # print("inside get nearby", uavs)
         for uav in uavs:
             # print("is {} smaller than {}: {}".format(np.linalg.norm(uav.get_local_position(T) - self.get_local_position(T)), d, np.linalg.norm(uav.get_local_position(T) - self.get_local_position(T)) < d) )
-            if np.linalg.norm(uav.get_local_position(T) - self.get_local_position(T)) < d and (uav is not self):
-                nearby_uavs.append(uav.get_local_state())
+            if np.linalg.norm(uav.local_states[-1] - self.local_states[-1]) < d and (uav is not self):
+                nearby_uavs.append(uav.local_states[-1])
         return nearby_uavs
-
 
     def delta_v(self, a, v0, dW, debug=False, c0 = 0.1):
         '''
@@ -451,62 +501,6 @@ class UAV:
         dv = a - c0 * (self.get_local_velocity() - UAV.v0) + self.V0.dot(delta_W)
         return dv
 
-    def delta_r(self, T):
-        '''
-        Since we assume that dt=1, then the  change in position is simply the amount of 
-        distance we achieved in the current velocity
-        '''
-        return self.get_local_velocity(T)
-
-    def average_cost(self, T):
-        total_cost = 0
-        for t in range(T):
-            print("orig",self.kinetic_cost(T))
-            px, py, vx, vy, ax, ay = self.local_states[T][0,0], self.local_states[T][1,0], self.local_states[T][2,0], self.local_states[T][3,0], self.a[T][0], self.a[T][1]
-            print("lambda", self.kinetic_cost_lambda(px,py, vx,  vy, ax, ay))
-
-            print("col_orig", self.collision_cost(T))
-            print("lambda_col", self.collision_avoidance_cost(T))
-            total_cost += UAV.C_4*self.collision_cost(T) + self.kinetic_cost(T)
-        
-        return total_cost
-
-
-    def kinetic_cost(self, t):
-        #position velocity
-        state = self.local_states[t]
-        r = state[0:2]
-        v = state[2:4]
-        px, py, vx, vy, ax, ay = r[0,0], r[1,0], v[0,0], v[1,0], self.a[t][0], self.a[t][1]
-        return self.kinetic_cost_lambda(px,py, vx,  vy, ax, ay)#(np.dot(v.T, r)/np.linalg.norm(r)) + UAV.C_1*(np.linalg.norm(r)**2) + UAV.C_2*(np.linalg.norm(v)**2) + UAV.C_3*(np.linalg.norm(self.a[t])**2)
-
-    # def hjb_control(self, T):
-    #     '''
-    #     uavs - > the total UAVS
-    #     d -> distance of communication
-    #     T -> time instance, an integer
-    #     '''
-    #     # print(type(uavs))
-    #     # print(uavs)
-    #     nearby_uavs = self.get_nearby_uavs_states(uavs, d, T)
-    #     min_cost = self._hjb(T)
-    #     print("hjb_cost ", min_cost)
-    #     return 
-    def hjb_control(self, T):
-        #the derivative of the cost function is simply the sum of the two energy functions (since derivative of integral cancels out)
-    
-
-        delta1_cost = self.delta_total_cost(T, delta=1)
-        delta2_cost = self.delta_total_cost(T, delta=2)
-        kin_cost = self.kinetic_cost(T) 
-        col_cost = self.collision_avoidance_cost(T) 
-        term1 = kin_cost + col_cost
-        term2 = (UAV.A_mat.dot(self.local_states[T]) + 1/(4.0 * UAV.C_3) * (UAV.B_mat.dot(UAV.B_mat.T)).dot(delta1_cost) + UAV.B_mat.dot(UAV.v0) * UAV.C_0).T.dot(delta1_cost)
-        term3 = 0.5 * (self.G_mat.dot(self.G_mat.T).dot(delta2_cost)).trace()
-        hjb_total = term1 + term2 + term3 + kin_cost + col_cost
-        hjb_total = hjb_total.flatten()[0]
-        # print("flattened",hjb_total)
-        return hjb_total
 
 
     def __str__(self):
@@ -548,8 +542,8 @@ def generate_uavs(n):
     uavs = []
     for i in range(n):
 
-        r = [np.random.uniform(-10, 10), np.random.uniform(-10, 10)]
-        v = [np.random.uniform(-5, 5), np.random.uniform(-5, 5)]
+        r = [np.random.uniform(-3, 3) + 100, np.random.uniform(-3, 3) + 100]
+        v = [np.random.uniform(0, 0), np.random.uniform(0, 0)]
         uavs.append(UAV(r,v,brownian()))
     return uavs
 
@@ -581,49 +575,17 @@ def generate_mesh_grid_points(interval=(-5,5), samples=11):
     return points
 
 def calculate_wind_covariance(expected_wind_velocity, brownian_noise):
-    wind_samples = np.zeros((100,2))
-    for i, noise in enumerate(brownian_noise):
-        real_wind_vel = expected_wind_velocity + np.array(noise).reshape(2,1)
-        wind_samples[i] = real_wind_vel.reshape(2,)   
+    wind_samples = np.zeros((2,2))
+    real_wind_vel = expected_wind_velocity + np.array(brownian_noise).reshape(2,1)
+    wind_samples[0] = real_wind_vel.reshape(2,)   
+    wind_samples[1] = expected_wind_velocity.reshape(2,) 
     cov = np.cov(wind_samples.T)
     return cov
     
 def main():
-    swarm = UAVCluster(1, d=20)
-    swarm.sim()
-    uav1 = swarm.uavs[0]
-    
-    swarm.hjb_control(uav1)
-    # print(uav1._hjb_control(uav1.local_states[0], uav1.global_states[0], uav1.a[0]))
-    # print(uav1.hjb_control(0))
-    # print(uav1.a)
-    
-
-    dw, w = brownian()
-    # print(brown[0][0])
-    # sys.exit(0)
-    # wind_vel = np.array([2,2])[np.newaxis, :].T
-    # swarm.hjb_control(uav1, wind_vel, brown[0][0])
-    # points = generate_mesh_grid_points((-5,5), 11)
-
-
-
-    '''
-    uavs = generate_uavs(5)
-    print(uavs)
-
-    dW, W = brownian(T=1, N=1000)
-    wind_vel = np.array([100,100])[np.newaxis, :].T
-    a = np.array([0.2,0.2]).reshape((2,1))
-    c0 = 0.1
-    change = uavs[0].delta_v(a, wind_vel, dW[0], True)
-    print(change)
-
-    nearby = uavs[0].get_nearby_uavs_states(uavs, 100)
-    print(len(nearby))
-
-    uavs[0].average_cost(uavs, 100)
-    '''
+    swarm = UAVCluster(10, d=1)
+    swarm.simulate()
+    swarm.plot_uav_positions()
 
 if __name__ == "__main__":
     main()
