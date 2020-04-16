@@ -77,13 +77,14 @@ class UAVCluster:
         if np.linalg.norm(pos1-pos2) < d :
             return True
         return False
-    def plot_collisions(self, d):
-        numIterations = len(self.uavs[-1].local_states)
-        for i in range(numIterations):
-            states = [uav.local_states[i][0:2].reshape((2,)).tolist() for uav in self.uavs]
-            if
-            print(states)
-        print(numIterations)
+    # def plot_collisions(self, d):
+    #     numIterations = len(self.uavs[-1].local_states)
+    #     collisions = []
+    #     for i in range(numIterations):
+    #         states = [uav.local_states[i][0:2].reshape((2,)).tolist() for uav in self.uavs]
+    #         if self.is_collision()
+    #         print(states)
+    #     print(numIterations)
 
 
     def opt_accel(self, uav, accels):
