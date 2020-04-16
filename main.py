@@ -6,7 +6,6 @@ import sys
 import sympy
 from sympy import Symbol, lambdify, Matrix, Sum, MatrixSymbol, Derivative
 # from sympy import *
-from apm import *
 
 """
 """
@@ -73,6 +72,19 @@ class UAVCluster:
             plt.plot(positions[:, 0], positions[:, 1])
             print(positions)
         plt.show()
+
+    def is_collision(self, pos1, pos2, d):
+        if np.linalg.norm(pos1-pos2) < d :
+            return True
+        return False
+    def plot_collisions(self, d):
+        numIterations = len(self.uavs[-1].local_states)
+        for i in range(numIterations):
+            states = [uav.local_states[i][0:2].reshape((2,)).tolist() for uav in self.uavs]
+            if
+            print(states)
+        print(numIterations)
+
 
     def opt_accel(self, uav, accels):
         hjb_values = []
@@ -582,10 +594,14 @@ def calculate_wind_covariance(expected_wind_velocity, brownian_noise):
     cov = np.cov(wind_samples.T)
     return cov
     
+
+
 def main():
+
     swarm = UAVCluster(10, d=1)
-    swarm.simulate()
+    swarm.simulate(10)
     swarm.plot_uav_positions()
+    swarm.plot_collisions(0.5)
 
 if __name__ == "__main__":
     main()
