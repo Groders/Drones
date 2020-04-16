@@ -47,15 +47,33 @@ class UAVCluster:
         for t in range(T):
             for i, uav in enumerate (self.uavs):
                 hjb_cost[i] = uav.hjb_control(t)
-        print("hjb cost:")
-        print(hjb_cost)
-        print("acceleration: {}".format(a))
+
+    def sim_v2 (self, T= 200):
+        #self.uavs[0].local_states[-1] = np.reshape(np.array([90.,90.,2.,2.]),(4,1))
+        dW, W = brownian(T=1, N=T)
+        for t in range(T):
+            self.update()
+            for i, uav in enumerate (self.uavs):
+                print(uav.local_states[-1])
+                acc = self.hjb_control(uav)
+                print(acc)
+                ds = uav.delta_state (uav.local_states[-1], acc, dW[t])
+
+                uav.apply_ds(ds, acc)
+                
+    def plot_uav_positions(self):
+        for uav in self.uavs:
+            positions = [state[0:2].reshape((2,)).tolist() for state in uav.local_states]
+            positions = np.array(positions)
+            plt.plot(positions[:, 0], positions[:, 1])
+        plt.show()
+
+
+
 
     def hjb_control(self, uav):
-        accels = generate_mesh_grid_points((-10,10), 11)
-        print("accelerations: ",accels)
+        accels = generate_mesh_grid_points((-5,5), 10)
         hjb_values = []
-        print("length: {}".format(len(accels)))
         for i in range(len(accels)):
             accel = np.array(accels[i]).reshape((2,1))
             # get the last state this uav was in
@@ -64,34 +82,24 @@ class UAVCluster:
 
             updated_local_state = uav.get_new_local_state(local_state, accel)
             hjb_output = uav._hjb_control(updated_local_state, global_state, accel)
-            # hjb_output = uav._hjb_control(local_state, global_state, accel)
             hjb_values.append(hjb_output)
 
         hjb_values = np.array(hjb_values)
         min_value = hjb_values.min()
         index = hjb_values.argmin()
-        print(hjb_values)
-        print(hjb_values.min())
-        print(hjb_values.argmin())
-        print(uav.local_states[-1])
-        print("accel: {}".format(accels[index]))
         opt_accel = np.array(accels[index]).reshape((2,1))
 
-        # delta_v = uav.delta_v(opt_accel,wind_vel,brown)
-        # print("deltaV = {}".format(delta_v))
         updated_local_state = uav.get_new_local_state(uav.local_states[-1], opt_accel)
-        # print("updated_local_state: {}".format(updated_local_state))
-        # out = uav.optimal_accel(updated_local_state, uav.global_states[-1], opt_accel)
         out = uav.optimal_accel(uav.local_states[-1], uav.global_states[-1], opt_accel)
-        print(out)
+        return opt_accel
         
     
 class UAV:
     #constants
-    C_0 = 0.1
-    C_1 = 100
-    C_2 = 1.5
-    C_3 = 1.5
+    C_0 = 0.4 #0.1 in paper
+    C_1 = 1000
+    C_2 = 50
+    C_3 = 200 #1.5 in paper 
     C_4 = 0.5
     BETA = 1
     E = 0.001
@@ -106,7 +114,7 @@ class UAV:
                   [0, 1]])
     
     # Wind Velocity
-    v0 = np.array([2,2])[np.newaxis, :].T
+    v0 = np.array([5,-5])[np.newaxis, :].T
     
 
 
@@ -158,7 +166,7 @@ class UAV:
         self.delta1_collision_cost_lambda = lambdify([px,py,vx,vy,opx,opy,ovx,ovy], delta_collision_avoidance_cost, "numpy") # this is the first derivative with respect to state
         self.delta2_collision_cost_lambda = lambdify([px,py,vx,vy,opx,opy,ovx,ovy], second_delta_collision_avoidance_cost, "numpy") # this is the first derivative with respect to state
         # print("asdfasdfasdf")
-        print(delta_collision_avoidance_cost)
+        # print(delta_collision_avoidance_cost)
         # print("col", collision_avoidance_cost)
         # print(delta_kinetic_cost)
         self.kinetic_cost_lambda = lambdify([px, py, vx, vy, ax, ay], kinetic_cost_expression, "numpy" )
@@ -177,18 +185,31 @@ class UAV:
             state = np.copy(local_state)
             state[i,0] += diff
             diffs[i] = (self.local_state_cost(state, accel) + self.global_state_cost(state, global_state) - initial)/diff
-        print(diffs)
+        # print(diffs)
         return diffs
 
 
     def optimal_accel(self, local_state, global_state, accel):
         # deriv = self.partial_psi_wrt_state(local_state, global_state, accel)
         deriv = self.single_div(local_state, global_state, accel)
-        print("derivative: {}".format(deriv))
-        print("1/2c3: {}".format(1.0/(2*UAV.C_3)))
-        print("b_mat.t: {}".format(UAV.B_mat.T))
+        # print("derivative: {}".format(deriv))
+        # print("1/2c3: {}".format(1.0/(2*UAV.C_3)))
+        # print("b_mat.t: {}".format(UAV.B_mat.T))
         a = 1.0/(2*UAV.C_3) * UAV.B_mat.T.dot(deriv)
         return a
+
+    def delta_state (self, initial_state, accel, dW):
+        term1 = self.A_mat @ initial_state
+        term2 = self.B_mat @ (np.add(accel,(self.C_0*self.v0)))
+        term3 = np.reshape(self.G_mat @ dW, (4,1))
+        # print("init:")
+        # print(initial_state)
+        # print("Sum:")
+        s = term1 + term2 + term3
+        # print(s)
+        # print("fin:")
+        # print(initial_state + s)
+        return s
 
     def get_new_local_state(self, old_state, accel):
         new_state = np.zeros((4,1))
@@ -376,7 +397,7 @@ class UAV:
             v_i = state[2:4]
             r_i = state[0:2]
             s += (np.linalg.norm(v - v_i)**2) / ((UAV.E + (np.linalg.norm(r - r_i)**2))**UAV.BETA)
-        print("orig cost:", s)
+        #print("orig cost:", s)
         return s*prefix     
 
     def collision_avoidance_cost(self, t):
@@ -394,14 +415,14 @@ class UAV:
             cost = self.collision_cost_lambda(r[0], r[1], v[0],v[1], r_i[0], r_i[1], v_i[0], v_i[1])
             # print("lambda cost: ", cost)
             s += cost
-        print("col avoid", s)
+        #print("col avoid", s)
         return s*n
 
     def update(self,swarm,d):
-        print(swarm)
-        print(d)
+        #print(swarm)
+        #print(d)
 
-        print(self.get_nearby_uavs_states(swarm,d,-1))
+        #print(self.get_nearby_uavs_states(swarm,d,-1))
         self.global_states.append(self.get_nearby_uavs_states(swarm,d,-1))
         self.T += 1
 
@@ -422,6 +443,13 @@ class UAV:
         new_state[2:4] = self.local_states[T][2:4] + a
         new_state[0:2] = self.local_states[T][0:2] + new_state[2:4]
         self.local_states.append(new_state)
+
+    def apply_ds (self, ds, acc):
+        new_state = np.zeros((4,1))
+        new_state = self.local_states[-1] + ds
+        self.local_states.append(new_state)
+        self.a.append(acc)
+
 
     def get_nearby_uavs_states(self, uavs, d, T):
         nearby_uavs = []
@@ -548,8 +576,8 @@ def generate_uavs(n):
     uavs = []
     for i in range(n):
 
-        r = [np.random.uniform(-10, 10), np.random.uniform(-10, 10)]
-        v = [np.random.uniform(-5, 5), np.random.uniform(-5, 5)]
+        r = [np.random.uniform(-5, 5) + 90, np.random.uniform(-5, 5) + 90]
+        v = [np.random.uniform(-1, 1), np.random.uniform(-1, 1)]
         uavs.append(UAV(r,v,brownian()))
     return uavs
 
@@ -589,41 +617,10 @@ def calculate_wind_covariance(expected_wind_velocity, brownian_noise):
     return cov
     
 def main():
-    swarm = UAVCluster(1, d=20)
-    swarm.sim()
-    uav1 = swarm.uavs[0]
-    
-    swarm.hjb_control(uav1)
-    # print(uav1._hjb_control(uav1.local_states[0], uav1.global_states[0], uav1.a[0]))
-    # print(uav1.hjb_control(0))
-    # print(uav1.a)
-    
+    swarm = UAVCluster(3, d=5)
+    swarm.sim_v2()
+    swarm.plot_uav_positions()
 
-    dw, w = brownian()
-    # print(brown[0][0])
-    # sys.exit(0)
-    # wind_vel = np.array([2,2])[np.newaxis, :].T
-    # swarm.hjb_control(uav1, wind_vel, brown[0][0])
-    # points = generate_mesh_grid_points((-5,5), 11)
-
-
-
-    '''
-    uavs = generate_uavs(5)
-    print(uavs)
-
-    dW, W = brownian(T=1, N=1000)
-    wind_vel = np.array([100,100])[np.newaxis, :].T
-    a = np.array([0.2,0.2]).reshape((2,1))
-    c0 = 0.1
-    change = uavs[0].delta_v(a, wind_vel, dW[0], True)
-    print(change)
-
-    nearby = uavs[0].get_nearby_uavs_states(uavs, 100)
-    print(len(nearby))
-
-    uavs[0].average_cost(uavs, 100)
-    '''
 
 if __name__ == "__main__":
     main()
