@@ -73,12 +73,13 @@ class UAVCluster:
             positions = [state[0:2].reshape((2,)).tolist() for state in uav.local_states]
             positions = np.array(positions)
             plt.plot(positions[:, 0], positions[:, 1])
-            print(positions)
+            #print(positions)
 
         if with_collisions:
             collisions = self.plot_collisions(0.1)
             collisions = np.array(collisions)
-            plt.plot( collisions[:,0],  collisions[:, 1],  marker='x', linestyle = 'None', markersize=20,  color='magenta')
+            if (collisions != []):
+                plt.plot( collisions[:,0],  collisions[:, 1],  marker='x', linestyle = 'None', markersize=20,  color='magenta')
         plt.show()
 
     def is_collision(self, pos1, pos2, d):
