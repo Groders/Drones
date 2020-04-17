@@ -1,4 +1,4 @@
-# COMP 4900 term project
-Implementing https://arxiv.org/pdf/1905.04152.pdf
+To run: 
 
-Dependencies
+python main.py Example_1.json
+python main.py 
